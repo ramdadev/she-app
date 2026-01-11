@@ -1,0 +1,671 @@
+// pubspec.yaml dependencies yang dibutuhkan:
+// flutter_blue_plus: ^1.14.0
+// fl_chart: ^0.65.0
+// shared_preferences: ^2.2.2
+
+import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
+import 'dart:convert';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'ESP32 Monitor',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+      ),
+      home: const MainScreen(),
+    );
+  }
+}
+
+class MainScreen extends StatefulWidget {
+  const MainScreen({Key? key}) : super(key: key);
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  int _selectedIndex = 0;
+  BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? writeCharacteristic;
+  BluetoothCharacteristic? notifyCharacteristic;
+
+  double temperature = 0.0;
+  double humidity = 0.0;
+  double gasLevel = 0.0;
+  bool buzzerActive = false;
+  bool isConnected = false;
+
+  List<SensorData> temperatureHistory = [];
+  List<SensorData> humidityHistory = [];
+  List<SensorData> gasHistory = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      buzzerActive = prefs.getBool('buzzer_active') ?? false;
+    });
+  }
+
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('buzzer_active', buzzerActive);
+  }
+
+  void _updateSensorData(String data) {
+    try {
+      final json = jsonDecode(data);
+      setState(() {
+        temperature = json['temp']?.toDouble() ?? 0.0;
+        humidity = json['hum']?.toDouble() ?? 0.0;
+        gasLevel = json['gas']?.toDouble() ?? 0.0;
+
+        final now = DateTime.now();
+        temperatureHistory.add(SensorData(now, temperature));
+        humidityHistory.add(SensorData(now, humidity));
+        gasHistory.add(SensorData(now, gasLevel));
+
+        if (temperatureHistory.length > 50) temperatureHistory.removeAt(0);
+        if (humidityHistory.length > 50) humidityHistory.removeAt(0);
+        if (gasHistory.length > 50) gasHistory.removeAt(0);
+      });
+    } catch (e) {
+      print('Error parsing sensor data: $e');
+    }
+  }
+
+  Future<void> _sendCommand(String command) async {
+    if (writeCharacteristic != null) {
+      await writeCharacteristic!.write(utf8.encode(command));
+    }
+  }
+
+  Future<void> _toggleBuzzer() async {
+    setState(() {
+      buzzerActive = !buzzerActive;
+    });
+    await _sendCommand('BUZZER:${buzzerActive ? '1' : '0'}');
+    await _saveSettings();
+  }
+
+  Widget _getScreen() {
+    switch (_selectedIndex) {
+      case 0:
+        return DashboardScreen(
+          temperature: temperature,
+          humidity: humidity,
+          gasLevel: gasLevel,
+          buzzerActive: buzzerActive,
+          onBuzzerToggle: _toggleBuzzer,
+          isConnected: isConnected,
+        );
+      case 1:
+        return StatisticsScreen(
+          temperatureHistory: temperatureHistory,
+          humidityHistory: humidityHistory,
+          gasHistory: gasHistory,
+        );
+      case 2:
+        return DeviceSettingsScreen(
+          connectedDevice: connectedDevice,
+          isConnected: isConnected,
+          onConnect: (device) async {
+            await device.connect();
+            setState(() {
+              connectedDevice = device;
+              isConnected = true;
+            });
+
+            final services = await device.discoverServices();
+            for (var service in services) {
+              for (var char in service.characteristics) {
+                if (char.properties.write) {
+                  writeCharacteristic = char;
+                }
+                if (char.properties.notify) {
+                  notifyCharacteristic = char;
+                  await char.setNotifyValue(true);
+                  char.value.listen((value) {
+                    _updateSensorData(utf8.decode(value));
+                  });
+                }
+              }
+            }
+          },
+          onDisconnect: () async {
+            await connectedDevice?.disconnect();
+            setState(() {
+              connectedDevice = null;
+              isConnected = false;
+            });
+          },
+          onSendWifiCommand: (ssid, password) async {
+            await _sendCommand('WIFI:$ssid,$password');
+          },
+        );
+      default:
+        return const SizedBox();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _getScreen(),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (index) {
+          setState(() {
+            _selectedIndex = index;
+          });
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard),
+            label: 'Dashboard',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.bar_chart),
+            label: 'Statistik',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings),
+            label: 'Device',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class DashboardScreen extends StatelessWidget {
+  final double temperature;
+  final double humidity;
+  final double gasLevel;
+  final bool buzzerActive;
+  final VoidCallback onBuzzerToggle;
+  final bool isConnected;
+
+  const DashboardScreen({
+    Key? key,
+    required this.temperature,
+    required this.humidity,
+    required this.gasLevel,
+    required this.buzzerActive,
+    required this.onBuzzerToggle,
+    required this.isConnected,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Dashboard'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Chip(
+              avatar: Icon(
+                Icons.circle,
+                size: 12,
+                color: isConnected ? Colors.green : Colors.red,
+              ),
+              label: Text(isConnected ? 'Terhubung' : 'Terputus'),
+            ),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            SensorCard(
+              title: 'Suhu',
+              value: temperature.toStringAsFixed(1),
+              unit: '°C',
+              icon: Icons.thermostat,
+              color: Colors.orange,
+            ),
+            const SizedBox(height: 16),
+            SensorCard(
+              title: 'Kelembapan',
+              value: humidity.toStringAsFixed(1),
+              unit: '%',
+              icon: Icons.water_drop,
+              color: Colors.blue,
+            ),
+            const SizedBox(height: 16),
+            SensorCard(
+              title: 'Gas',
+              value: gasLevel.toStringAsFixed(0),
+              unit: 'ppm',
+              icon: Icons.air,
+              color: Colors.green,
+            ),
+            const SizedBox(height: 24),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.notifications_active,
+                      size: 40,
+                      color: buzzerActive ? Colors.red : Colors.grey,
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Buzzer',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            buzzerActive ? 'Aktif' : 'Nonaktif',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Switch(
+                      value: buzzerActive,
+                      onChanged: (value) => onBuzzerToggle(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SensorCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final String unit;
+  final IconData icon;
+  final Color color;
+
+  const SensorCard({
+    Key? key,
+    required this.title,
+    required this.value,
+    required this.unit,
+    required this.icon,
+    required this.color,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, size: 32, color: color),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        value,
+                        style: const TextStyle(
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          unit,
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class StatisticsScreen extends StatelessWidget {
+  final List<SensorData> temperatureHistory;
+  final List<SensorData> humidityHistory;
+  final List<SensorData> gasHistory;
+
+  const StatisticsScreen({
+    Key? key,
+    required this.temperatureHistory,
+    required this.humidityHistory,
+    required this.gasHistory,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Statistik')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            ChartCard(
+              title: 'Suhu (°C)',
+              data: temperatureHistory,
+              color: Colors.orange,
+            ),
+            const SizedBox(height: 16),
+            ChartCard(
+              title: 'Kelembapan (%)',
+              data: humidityHistory,
+              color: Colors.blue,
+            ),
+            const SizedBox(height: 16),
+            ChartCard(
+              title: 'Gas (ppm)',
+              data: gasHistory,
+              color: Colors.green,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ChartCard extends StatelessWidget {
+  final String title;
+  final List<SensorData> data;
+  final Color color;
+
+  const ChartCard({
+    Key? key,
+    required this.title,
+    required this.data,
+    required this.color,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 200,
+              child: data.isEmpty
+                  ? const Center(child: Text('Tidak ada data'))
+                  : LineChart(
+                      LineChartData(
+                        gridData: FlGridData(show: true),
+                        titlesData: FlTitlesData(
+                          leftTitles: AxisTitles(
+                            sideTitles: SideTitles(showTitles: true),
+                          ),
+                          bottomTitles: AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          rightTitles: AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                          topTitles: AxisTitles(
+                            sideTitles: SideTitles(showTitles: false),
+                          ),
+                        ),
+                        borderData: FlBorderData(show: true),
+                        lineBarsData: [
+                          LineChartBarData(
+                            spots: data
+                                .asMap()
+                                .entries
+                                .map((e) => FlSpot(
+                                      e.key.toDouble(),
+                                      e.value.value,
+                                    ))
+                                .toList(),
+                            isCurved: true,
+                            color: color,
+                            barWidth: 3,
+                            dotData: FlDotData(show: false),
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class DeviceSettingsScreen extends StatefulWidget {
+  final BluetoothDevice? connectedDevice;
+  final bool isConnected;
+  final Function(BluetoothDevice) onConnect;
+  final VoidCallback onDisconnect;
+  final Function(String, String) onSendWifiCommand;
+
+  const DeviceSettingsScreen({
+    Key? key,
+    required this.connectedDevice,
+    required this.isConnected,
+    required this.onConnect,
+    required this.onDisconnect,
+    required this.onSendWifiCommand,
+  }) : super(key: key);
+
+  @override
+  State<DeviceSettingsScreen> createState() => _DeviceSettingsScreenState();
+}
+
+class _DeviceSettingsScreenState extends State<DeviceSettingsScreen> {
+  List<ScanResult> scanResults = [];
+  bool isScanning = false;
+  final ssidController = TextEditingController();
+  final passwordController = TextEditingController();
+
+  Future<void> _startScan() async {
+    setState(() {
+      scanResults = [];
+      isScanning = true;
+    });
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
+
+    FlutterBluePlus.scanResults.listen((results) {
+      setState(() {
+        scanResults = results;
+      });
+    });
+
+    await Future.delayed(const Duration(seconds: 4));
+    setState(() {
+      isScanning = false;
+    });
+  }
+
+  void _showWifiDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Konfigurasi WiFi'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: ssidController,
+              decoration: const InputDecoration(
+                labelText: 'SSID',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Password',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              widget.onSendWifiCommand(
+                ssidController.text,
+                passwordController.text,
+              );
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Mengirim konfigurasi WiFi...'),
+                ),
+              );
+            },
+            child: const Text('Kirim'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Device & Settings')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (widget.isConnected) ...[
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.bluetooth_connected, color: Colors.blue),
+                title: Text(widget.connectedDevice?.name ?? 'ESP32'),
+                subtitle: const Text('Terhubung'),
+                trailing: ElevatedButton(
+                  onPressed: widget.onDisconnect,
+                  child: const Text('Putuskan'),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _showWifiDialog,
+              icon: const Icon(Icons.wifi),
+              label: const Text('Konfigurasi WiFi'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.all(16),
+              ),
+            ),
+          ] else ...[
+            ElevatedButton.icon(
+              onPressed: isScanning ? null : _startScan,
+              icon: const Icon(Icons.bluetooth_searching),
+              label: Text(isScanning ? 'Scanning...' : 'Scan Perangkat'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.all(16),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ...scanResults.map((result) {
+              return Card(
+                child: ListTile(
+                  leading: const Icon(Icons.bluetooth),
+                  title: Text(result.device.name.isEmpty
+                      ? 'Unknown Device'
+                      : result.device.name),
+                  subtitle: Text(result.device.id.toString()),
+                  trailing: ElevatedButton(
+                    onPressed: () => widget.onConnect(result.device),
+                    child: const Text('Hubungkan'),
+                  ),
+                ),
+              );
+            }).toList(),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class SensorData {
+  final DateTime time;
+  final double value;
+
+  SensorData(this.time, this.value);
+}
