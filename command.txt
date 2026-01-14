@@ -1,0 +1,2 @@
+// Run Import Sorter
+dart pub run import_sorter:main lib\/*
