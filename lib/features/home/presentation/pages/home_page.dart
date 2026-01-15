@@ -1,5 +1,9 @@
+// Flutter imports:
 import 'package:flutter/material.dart';
+
+// Project imports:
 import 'package:she/core/toastification/toastification.dart';
+import 'package:she/features/home/presentation/widgets/sensor_card.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -89,7 +93,7 @@ class _HomePageState extends State<HomePage> {
                             Text(
                               'Smart Home',
                               style: TextStyle(
-                                color: Colors.white.withOpacity(0.9),
+                                color: Colors.white.withValues(alpha: 0.9),
                                 fontSize: 16,
                               ),
                             ),
@@ -107,7 +111,7 @@ class _HomePageState extends State<HomePage> {
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
+                            color: Colors.white.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: const Icon(
@@ -129,8 +133,8 @@ class _HomePageState extends State<HomePage> {
                       ),
                       decoration: BoxDecoration(
                         color: isDeviceConnected
-                            ? Colors.green.withOpacity(0.3)
-                            : Colors.red.withOpacity(0.3),
+                            ? Colors.green.withValues(alpha: 0.3)
+                            : Colors.red.withValues(alpha: 0.3),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: isDeviceConnected
@@ -177,6 +181,7 @@ class _HomePageState extends State<HomePage> {
                   });
                 },
                 child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     children: [
@@ -223,7 +228,7 @@ class _HomePageState extends State<HomePage> {
                           borderRadius: BorderRadius.circular(20),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(0.05),
+                              color: Colors.black.withValues(alpha: 0.05),
                               blurRadius: 10,
                               offset: const Offset(0, 2),
                             ),
@@ -237,7 +242,9 @@ class _HomePageState extends State<HomePage> {
                                 Container(
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
-                                    color: getGasLevelColor().withOpacity(0.1),
+                                    color: getGasLevelColor().withValues(
+                                      alpha: 0.1,
+                                    ),
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Icon(
@@ -396,7 +403,7 @@ class _HomePageState extends State<HomePage> {
                           boxShadow: [
                             BoxShadow(
                               color: (isBuzzerOn ? Colors.green : Colors.grey)
-                                  .withOpacity(0.3),
+                                  .withValues(alpha: 0.3),
                               blurRadius: 10,
                               offset: const Offset(0, 5),
                             ),
@@ -440,7 +447,9 @@ class _HomePageState extends State<HomePage> {
                                             ? 'Buzzer Aktif'
                                             : 'Buzzer Nonaktif',
                                         style: TextStyle(
-                                          color: Colors.white.withOpacity(0.9),
+                                          color: Colors.white.withValues(
+                                            alpha: 0.9,
+                                          ),
                                           fontSize: 13,
                                         ),
                                       ),
@@ -452,7 +461,7 @@ class _HomePageState extends State<HomePage> {
                                   child: Switch(
                                     value: isBuzzerOn,
                                     onChanged: (value) => toggleBuzzer(),
-                                    activeColor: Colors.white,
+                                    activeThumbColor: Colors.white,
                                     activeTrackColor: Colors.green[300],
                                     inactiveThumbColor: Colors.white,
                                     inactiveTrackColor: Colors.grey[400],
@@ -466,7 +475,7 @@ class _HomePageState extends State<HomePage> {
                               Container(
                                 padding: const EdgeInsets.all(12),
                                 decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
+                                  color: Colors.white.withValues(alpha: 0.2),
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 child: const Row(
@@ -493,37 +502,6 @@ class _HomePageState extends State<HomePage> {
                           ],
                         ),
                       ),
-
-                      const SizedBox(height: 16),
-
-                      // Info Card
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(15),
-                          border: Border.all(color: Colors.blue[200]!),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              Icons.info_outline_rounded,
-                              color: Colors.blue[700],
-                              size: 24,
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'Data diperbarui secara real-time dari ESP32',
-                                style: TextStyle(
-                                  color: Colors.blue[900],
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -531,83 +509,6 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class SensorCard extends StatelessWidget {
-  final String title;
-  final String value;
-  final String unit;
-  final IconData icon;
-  final Color color;
-  final List<Color> gradient;
-
-  const SensorCard({
-    super.key,
-    required this.title,
-    required this.value,
-    required this.unit,
-    required this.icon,
-    required this.color,
-    required this.gradient,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(colors: gradient),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(icon, color: Colors.white, size: 24),
-          ),
-          const SizedBox(height: 16),
-          Text(title, style: TextStyle(fontSize: 13, color: Colors.grey[600])),
-          const SizedBox(height: 4),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(width: 4),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  unit,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[600],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
       ),
     );
   }

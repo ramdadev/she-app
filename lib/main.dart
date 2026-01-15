@@ -4,13 +4,13 @@ import 'package:flutter/services.dart';
 
 // Package imports:
 import 'package:flutter_native_splash/flutter_native_splash.dart';
-import 'package:she/features/device/presentation/pages/device_page.dart';
-import 'package:she/features/history/presentation/pages/history_page.dart';
-import 'package:she/features/home/presentation/pages/home_page.dart';
 import 'package:toastification/toastification.dart';
 
 // Project imports:
 import 'package:she/config/theme/app_themes.dart';
+import 'package:she/features/device/presentation/pages/device_page.dart';
+import 'package:she/features/history/presentation/pages/history_page.dart';
+import 'package:she/features/home/presentation/pages/home_page.dart';
 
 void main() async {
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
@@ -50,6 +50,7 @@ class _MyAppState extends State<MyApp> {
 
   void initialization() async {
     await Future.delayed(const Duration(seconds: 2));
+
     FlutterNativeSplash.remove();
   }
 
@@ -68,7 +69,7 @@ class _MyAppState extends State<MyApp> {
               color: Colors.transparent,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
+                  color: Colors.black.withValues(alpha: 0.1),
                   blurRadius: 20,
                   offset: const Offset(0, -5),
                 ),
@@ -124,7 +125,9 @@ class _MyAppState extends State<MyApp> {
               ),
             ),
           ),
+          extendBody: true,
         ),
+        debugShowCheckedModeBanner: false,
       ),
     );
   }
