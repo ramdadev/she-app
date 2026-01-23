@@ -226,8 +226,11 @@ class _HomePageState extends State<HomePage> {
 
         case gasSettingTopic:
           final gasSettings = jsonDecode(payload);
-          maxSafeGasLevel = gasSettings['maxSafeLevel'];
-          warningGasLevel = gasSettings['warningLevel'];
+
+          maxSafeGasLevel = (gasSettings['maxSafeLevel'] as num).toDouble();
+          warningGasLevel = (gasSettings['warningLevel'] as num).toDouble();
+
+          debugPrint('Gas Settings: $gasSettings');
           break;
 
         default:
@@ -274,7 +277,7 @@ class _HomePageState extends State<HomePage> {
         buzzerTopic,
         MqttQos.atLeastOnce,
         builder.payload!,
-        retain: false,
+        retain: true,
       );
 
       toastificationService.showInfo(
@@ -344,7 +347,7 @@ class _HomePageState extends State<HomePage> {
       gasSettingTopic,
       MqttQos.atLeastOnce,
       builder.payload!,
-      retain: false,
+      retain: true,
     );
   }
 
