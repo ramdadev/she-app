@@ -1,8 +1,6 @@
 // Flutter imports:
 import 'package:flutter/material.dart';
-
-// Project imports:
-import 'package:she/features/device/domain/entities/ble_device.dart';
+import 'package:she/models/ble_device.dart';
 
 class DeviceCard extends StatelessWidget {
   final BleDevice device;

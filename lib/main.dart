@@ -4,13 +4,12 @@ import 'package:flutter/services.dart';
 
 // Package imports:
 import 'package:flutter_native_splash/flutter_native_splash.dart';
+import 'package:she/pages/device_page.dart';
+import 'package:she/pages/home_page.dart';
 import 'package:toastification/toastification.dart';
 
 // Project imports:
 import 'package:she/config/theme/app_themes.dart';
-import 'package:she/features/device/presentation/pages/device_page.dart';
-import 'package:she/features/history/presentation/pages/history_page.dart';
-import 'package:she/features/home/presentation/pages/home_page.dart';
 
 void main() async {
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
@@ -54,7 +53,7 @@ class _MyAppState extends State<MyApp> {
     FlutterNativeSplash.remove();
   }
 
-  final List<Widget> _pages = const [HomePage(), HistoryPage(), DevicePage()];
+  final List<Widget> _pages = const [HomePage(), DevicePage()];
 
   @override
   Widget build(BuildContext context) {
@@ -110,11 +109,6 @@ class _MyAppState extends State<MyApp> {
                     icon: _buildNavIcon(Icons.home_outlined, 0),
                     activeIcon: _buildActiveNavIcon(Icons.home_rounded, 0),
                     label: 'Beranda',
-                  ),
-                  BottomNavigationBarItem(
-                    icon: _buildNavIcon(Icons.history_outlined, 1),
-                    activeIcon: _buildActiveNavIcon(Icons.history_rounded, 1),
-                    label: 'Riwayat',
                   ),
                   BottomNavigationBarItem(
                     icon: _buildNavIcon(Icons.devices_outlined, 2),
