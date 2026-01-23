@@ -1,5 +1,4 @@
-// Flutter imports:
-import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:mqtt_client/mqtt_client.dart';
@@ -17,25 +16,25 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // MQTT Client
   late MqttServerClient client;
   bool isDeviceConnected = false;
   String connectedDevice = '';
 
-  // Sensor data
   double temperature = 0.0;
   double humidity = 0.0;
   double gasLevel = 0.0; // PPM
   bool isBuzzerOn = false;
   bool isDataLoaded = false;
 
-  // Thresholds
-  final double maxSafeGasLevel = 400.0;
-  final double warningGasLevel = 300.0;
+  bool _wasConnected = false;
+  bool _isRetrying = false;
+  bool _isConnecting = false;
 
-  // MQTT Topics
+  double maxSafeGasLevel = 400.0;
+  double warningGasLevel = 300.0;
+
   static const String mqttBroker =
-      'aabf0193af29481faf564bf565f682be.s1.eu.hivemq.cloud';
+      'f38e4be24dc34b5ca97d975d7595c8d2.s1.eu.hivemq.cloud';
   static const int mqttPort = 8883;
   static const String buzzerTopic = 'home/buzzer/set';
   static const String buzzerStatusTopic = 'home/buzzer/status';
@@ -43,6 +42,7 @@ class _HomePageState extends State<HomePage> {
   static const String humidityTopic = 'home/sensor/humidity';
   static const String gasLevelTopic = 'home/sensor/gas';
   static const String deviceNameTopic = 'home/device/name';
+  static const String gasSettingTopic = 'home/gas/setting';
 
   final toastificationService = ToastificationService();
 
@@ -52,26 +52,40 @@ class _HomePageState extends State<HomePage> {
     _initializeMqtt();
   }
 
-  // Perbaikan bagian _initializeMqtt()
   Future<void> _initializeMqtt() async {
+    if (_isConnecting) {
+      debugPrint('⏳ Already connecting, skip');
+      return;
+    }
+
+    _isConnecting = true;
+
+    try {
+      client.disconnect();
+    } catch (_) {}
+
     final clientId = 'FlutterClient_${DateTime.now().millisecondsSinceEpoch}';
 
-    client = MqttServerClient(mqttBroker, clientId);
+    client = MqttServerClient.withPort(mqttBroker, clientId, mqttPort);
 
-    client.port = 8883;
-    client.secure = true;
-    client.keepAlivePeriod = 60;
     client.logging(on: true);
-    client.securityContext = SecurityContext.defaultContext;
+    client.keepAlivePeriod = 60;
+    client.connectTimeoutPeriod = 10000;
+    client.autoReconnect = false;
 
+    client.secure = true;
+    client.onBadCertificate = (dynamic cert) {
+      debugPrint('⚠️ Accepting certificate');
+      return true;
+    };
     client.setProtocolV311();
 
-    // Fix: Gunakan MqttConnectMessage bukan ConnectMessage
     final connMess = MqttConnectMessage()
         .withClientIdentifier(clientId)
         .startClean()
         .authenticateAs('client', 'ClientESP32')
-        .withWillQos(MqttQos.atLeastOnce);
+        .withWillQos(MqttQos.atMostOnce);
+
     client.connectionMessage = connMess;
 
     client.onConnected = _onMqttConnected;
@@ -79,54 +93,84 @@ class _HomePageState extends State<HomePage> {
     client.onSubscribed = _onSubscribedTopic;
 
     try {
-      await client.connect();
-    } catch (e) {
-      debugPrint('Error connecting to MQTT: $e');
-      if (mounted) {
-        setState(() {
-          isDeviceConnected = false;
-        });
+      debugPrint('🔌 Connecting to MQTT...');
+
+      final status = await client.connect('client', 'ClientESP32');
+
+      if (status?.state != MqttConnectionState.connected) {
+        debugPrint('❌ Connect failed: ${status?.returnCode}');
+        _handleConnectionFailure();
+        return;
       }
-      _retryConnection();
+
+      debugPrint('✅ MQTT Connected');
+
+      client.updates?.listen((messages) {
+        for (var message in messages) {
+          final recMessage = message.payload as MqttPublishMessage;
+          final payload = MqttPublishPayload.bytesToStringAsString(
+            recMessage.payload.message,
+          );
+          _handleMqttMessage(message.topic, payload);
+        }
+      }, onError: (e) => debugPrint('❌ Stream error: $e'));
+    } catch (e) {
+      debugPrint('❌ MQTT error: $e');
+      _handleConnectionFailure();
+    } finally {
+      _isConnecting = false;
+    }
+  }
+
+  void _handleConnectionFailure() {
+    debugPrint('⚠️ Connection attempt failed');
+
+    if (mounted) {
+      setState(() {
+        isDeviceConnected = false;
+      });
     }
 
-    // Listen to subscription messages
-    client.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) {
-      for (var msg in c) {
-        final recMessage = msg.payload as MqttPublishMessage;
-        // Fix: Gunakan topic dari msg langsung
-        final topic = msg.topic.toString();
-        // Fix: Gunakan String.fromCharCodes atau utf8.decode
-        final payload = String.fromCharCodes(recMessage.payload.message);
-
-        _handleMqttMessage(topic, payload);
-      }
-    });
+    _retryConnection();
   }
 
   void _onMqttConnected() {
-    debugPrint('MQTT Connected');
+    if (!_wasConnected) {
+      toastificationService.showSuccess(
+        'Koneksi Berhasil',
+        'Terhubung ke server MQTT',
+      );
+    }
+
+    _wasConnected = true;
+    _isRetrying = false;
+
     if (mounted) {
       setState(() {
         isDeviceConnected = true;
       });
     }
 
-    // Subscribe to all topics
     client.subscribe(deviceNameTopic, MqttQos.atLeastOnce);
     client.subscribe(temperatureTopic, MqttQos.atLeastOnce);
     client.subscribe(humidityTopic, MqttQos.atLeastOnce);
     client.subscribe(gasLevelTopic, MqttQos.atLeastOnce);
     client.subscribe(buzzerStatusTopic, MqttQos.atLeastOnce);
-
-    toastificationService.showSuccess(
-      'Koneksi Berhasil',
-      'Terhubung ke server MQTT',
-    );
+    client.subscribe(gasSettingTopic, MqttQos.atLeastOnce);
   }
 
   void _onMqttDisconnected() {
-    debugPrint('MQTT Disconnected');
+    debugPrint('❌ MQTT Disconnected');
+
+    if (_wasConnected) {
+      toastificationService.showError(
+        'Koneksi Terputus',
+        'Mencoba koneksi ulang...',
+      );
+    }
+
+    _wasConnected = false;
+
     if (mounted) {
       setState(() {
         isDeviceConnected = false;
@@ -134,43 +178,84 @@ class _HomePageState extends State<HomePage> {
       });
     }
 
-    toastificationService.showError(
-      'Koneksi Terputus',
-      'Mencoba koneksi ulang...',
-    );
-
     _retryConnection();
   }
 
   void _onSubscribedTopic(String topic) {
-    debugPrint('Subscribed to: $topic');
+    debugPrint('✅ Subscribed to: $topic');
   }
 
   void _handleMqttMessage(String topic, String payload) {
-    if (mounted) {
-      setState(() {
-        isDataLoaded = true;
+    debugPrint('📨 $topic => $payload');
 
-        if (topic == deviceNameTopic) {
-          connectedDevice = payload;
-        } else if (topic == temperatureTopic) {
-          temperature = double.tryParse(payload) ?? 0.0;
-        } else if (topic == humidityTopic) {
-          humidity = double.tryParse(payload) ?? 0.0;
-        } else if (topic == gasLevelTopic) {
-          gasLevel = double.tryParse(payload) ?? 0.0;
-        } else if (topic == buzzerStatusTopic) {
-          isBuzzerOn = payload.toLowerCase() == 'on' || payload == '1';
-        }
-      });
-    }
+    if (!mounted) return;
+
+    setState(() {
+      isDataLoaded = true;
+
+      switch (topic) {
+        case deviceNameTopic:
+          connectedDevice = payload.trim();
+          break;
+
+        case temperatureTopic:
+          final temp = double.tryParse(payload);
+          if (temp != null && temp >= -50 && temp <= 150) {
+            temperature = temp;
+          }
+          break;
+
+        case humidityTopic:
+          final hum = double.tryParse(payload);
+          if (hum != null && hum >= 0 && hum <= 100) {
+            humidity = hum;
+          }
+          break;
+
+        case gasLevelTopic:
+          final gas = double.tryParse(payload);
+          if (gas != null && gas >= 0) {
+            gasLevel = gas;
+          }
+          break;
+
+        case buzzerStatusTopic:
+          final status = payload.trim().toLowerCase();
+          isBuzzerOn = (status == 'on' || status == '1' || status == 'true');
+          break;
+
+        case gasSettingTopic:
+          final gasSettings = jsonDecode(payload);
+          maxSafeGasLevel = gasSettings['maxSafeLevel'];
+          warningGasLevel = gasSettings['warningLevel'];
+          break;
+
+        default:
+          debugPrint('⚠️ Unknown topic: $topic');
+      }
+    });
   }
 
-  Future<void> _retryConnection() async {
-    await Future.delayed(const Duration(seconds: 5));
-    if (mounted && !isDeviceConnected) {
-      _initializeMqtt();
-    }
+  void _retryConnection() {
+    if (_isRetrying) return;
+
+    _isRetrying = true;
+
+    Future.delayed(const Duration(seconds: 5), () async {
+      if (_wasConnected) {
+        _isRetrying = false;
+        return;
+      }
+
+      debugPrint('🔁 Retrying MQTT...');
+      await _initializeMqtt();
+
+      // kalau masih gagal → ulangi lagi
+      if (!_wasConnected) {
+        _isRetrying = false;
+        _retryConnection();
+      }
+    });
   }
 
   void toggleBuzzer() {
@@ -208,21 +293,31 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Color getGasLevelColor() {
-    if (gasLevel >= warningGasLevel) return Colors.red;
-    if (gasLevel >= warningGasLevel * 0.7) return Colors.orange;
+  Color getGasLevelColor(double value) {
+    if (!isDeviceConnected || value == 0) return Colors.grey;
+
+    if (value >= maxSafeGasLevel) return Colors.red;
+    if (value >= warningGasLevel) return Colors.orange;
+
     return Colors.green;
   }
 
-  String getGasLevelStatus() {
-    if (gasLevel >= warningGasLevel) return 'Berbahaya';
-    if (gasLevel >= warningGasLevel * 0.7) return 'Peringatan';
+  String getGasLevelStatus(double value) {
+    if (!isDeviceConnected) return 'Tidak Terhubung';
+    if (value == 0) return 'Menunggu Data';
+
+    if (value >= maxSafeGasLevel) return 'Berbahaya';
+    if (value >= warningGasLevel) return 'Peringatan';
+
     return 'Aman';
   }
 
-  IconData getGasLevelIcon() {
-    if (gasLevel >= warningGasLevel) return Icons.warning_rounded;
-    if (gasLevel >= warningGasLevel * 0.7) return Icons.error_outline;
+  IconData getGasLevelIcon(double value) {
+    if (!isDeviceConnected || value == 0) return Icons.sensor_occupied;
+
+    if (value >= maxSafeGasLevel) return Icons.warning_rounded;
+    if (value >= warningGasLevel) return Icons.error_outline;
+
     return Icons.check_circle_outline;
   }
 
@@ -232,8 +327,25 @@ class _HomePageState extends State<HomePage> {
       client.subscribe(temperatureTopic, MqttQos.atLeastOnce);
       client.subscribe(humidityTopic, MqttQos.atLeastOnce);
       client.subscribe(gasLevelTopic, MqttQos.atLeastOnce);
+
       await Future.delayed(const Duration(seconds: 1));
     }
+  }
+
+  void publishGasLevelSettings(double maxLevel, double warningLevel) {
+    final payload = {'maxSafeLevel': maxLevel, 'warningLevel': warningLevel};
+
+    final jsonPayload = jsonEncode(payload);
+
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(jsonPayload);
+
+    client.publishMessage(
+      gasSettingTopic,
+      MqttQos.atLeastOnce,
+      builder.payload!,
+      retain: false,
+    );
   }
 
   @override
@@ -254,7 +366,6 @@ class _HomePageState extends State<HomePage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Header Section
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -269,7 +380,6 @@ class _HomePageState extends State<HomePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Greeting and Status
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -277,7 +387,7 @@ class _HomePageState extends State<HomePage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Smart Home',
+                              'Smart Home Environment',
                               style: TextStyle(
                                 color: Colors.white.withValues(alpha: 0.9),
                                 fontSize: 16,
@@ -308,10 +418,7 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 20),
-
-                    // Connection Status
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 16,
@@ -319,13 +426,13 @@ class _HomePageState extends State<HomePage> {
                       ),
                       decoration: BoxDecoration(
                         color: isDeviceConnected
-                            ? Colors.green.withValues(alpha: 0.3)
-                            : Colors.red.withValues(alpha: 0.3),
+                            ? const Color(0xFF4CAF50) // soft green
+                            : const Color(0xFFF44336), // soft red
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: isDeviceConnected
-                              ? Colors.green[300]!
-                              : Colors.red[300]!,
+                              ? const Color(0xFF81C784) // green light
+                              : const Color(0xFFE57373), // red light
                           width: 1,
                         ),
                       ),
@@ -359,8 +466,6 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
-
-            // Content Section
             Expanded(
               child: RefreshIndicator(
                 onRefresh: _refreshData,
@@ -369,7 +474,6 @@ class _HomePageState extends State<HomePage> {
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     children: [
-                      // Disconnect Warning Banner
                       if (!isDeviceConnected)
                         Container(
                           margin: const EdgeInsets.only(bottom: 20),
@@ -404,7 +508,7 @@ class _HomePageState extends State<HomePage> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      'Data real-time tidak tersedia. Kontrol dinonaktifkan.',
+                                      'Data real-time tidak tersedia. Kontrol dinonaktifkan. Pastikan perangkat ESP32 aktif dan terhubung.',
                                       style: TextStyle(
                                         fontSize: 12,
                                         color: Colors.red[600],
@@ -418,10 +522,8 @@ class _HomePageState extends State<HomePage> {
                         ),
                       Column(
                         children: [
-                          // Sensor Cards Row
                           Row(
                             children: [
-                              // Temperature Card
                               Expanded(
                                 child: SensorCard(
                                   title: 'Suhu',
@@ -469,22 +571,23 @@ class _HomePageState extends State<HomePage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Container(
                                       padding: const EdgeInsets.all(12),
                                       decoration: BoxDecoration(
-                                        color: getGasLevelColor().withValues(
-                                          alpha: 0.1,
-                                        ),
+                                        color: getGasLevelColor(
+                                          gasLevel,
+                                        ).withValues(alpha: 0.1),
                                         borderRadius: BorderRadius.circular(12),
                                       ),
                                       child: Icon(
                                         Icons.air_rounded,
-                                        color: getGasLevelColor(),
+                                        color: getGasLevelColor(gasLevel),
                                         size: 28,
                                       ),
                                     ),
-                                    const SizedBox(width: 16),
+                                    const SizedBox(width: 12),
                                     Expanded(
                                       child: Column(
                                         crossAxisAlignment:
@@ -498,61 +601,88 @@ class _HomePageState extends State<HomePage> {
                                             ),
                                           ),
                                           const SizedBox(height: 4),
-                                          Row(
-                                            children: [
-                                              Text(
-                                                isDeviceConnected
-                                                    ? gasLevel.toStringAsFixed(
-                                                        0,
-                                                      )
-                                                    : '0',
-                                                style: const TextStyle(
-                                                  fontSize: 32,
-                                                  fontWeight: FontWeight.bold,
+                                          FittedBox(
+                                            fit: BoxFit.scaleDown,
+                                            alignment: Alignment.centerLeft,
+                                            child: Row(
+                                              children: [
+                                                Text(
+                                                  isDeviceConnected
+                                                      ? gasLevel
+                                                            .toStringAsFixed(0)
+                                                      : '-',
+                                                  style: TextStyle(
+                                                    fontSize: 32,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: isDeviceConnected
+                                                        ? Colors.black
+                                                        : Colors.grey[400],
+                                                  ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                'PPM',
-                                                style: TextStyle(
-                                                  fontSize: 16,
-                                                  color: Colors.grey[600],
-                                                  fontWeight: FontWeight.w500,
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  'PPM',
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    color: Colors.grey[600],
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
                                                 ),
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 16,
-                                        vertical: 8,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: getGasLevelColor(),
-                                        borderRadius: BorderRadius.circular(20),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            getGasLevelIcon(),
-                                            color: Colors.white,
-                                            size: 16,
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            getGasLevelStatus(),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12,
-                                              fontWeight: FontWeight.bold,
+                                              ],
                                             ),
                                           ),
                                         ],
                                       ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          onPressed: () =>
+                                              showGasLevelSettings(context),
+                                          icon: const Icon(Icons.settings),
+                                          color: Colors.grey[600],
+                                          tooltip: 'Pengaturan',
+                                          padding: EdgeInsets.zero,
+                                          constraints: const BoxConstraints(),
+                                          iconSize: 20,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 12,
+                                            vertical: 6,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: getGasLevelColor(gasLevel),
+                                            borderRadius: BorderRadius.circular(
+                                              20,
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                getGasLevelIcon(gasLevel),
+                                                color: Colors.white,
+                                                size: 14,
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                getGasLevelStatus(gasLevel),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ],
                                 ),
@@ -572,11 +702,13 @@ class _HomePageState extends State<HomePage> {
                                           ),
                                         ),
                                         Text(
-                                          '${(gasLevel / maxSafeGasLevel * 100).toStringAsFixed(0)}%',
+                                          isDeviceConnected && gasLevel > 0
+                                              ? '${(gasLevel / maxSafeGasLevel * 100).clamp(0, 100).toStringAsFixed(0)}%'
+                                              : '0%',
                                           style: TextStyle(
                                             fontSize: 12,
                                             fontWeight: FontWeight.bold,
-                                            color: getGasLevelColor(),
+                                            color: getGasLevelColor(gasLevel),
                                           ),
                                         ),
                                       ],
@@ -585,12 +717,15 @@ class _HomePageState extends State<HomePage> {
                                     ClipRRect(
                                       borderRadius: BorderRadius.circular(10),
                                       child: LinearProgressIndicator(
-                                        value: gasLevel / maxSafeGasLevel,
+                                        value: isDeviceConnected && gasLevel > 0
+                                            ? (gasLevel / maxSafeGasLevel)
+                                                  .clamp(0.0, 1.0)
+                                            : 0.0,
                                         minHeight: 10,
                                         backgroundColor: Colors.grey[200],
                                         valueColor:
                                             AlwaysStoppedAnimation<Color>(
-                                              getGasLevelColor(),
+                                              getGasLevelColor(gasLevel),
                                             ),
                                       ),
                                     ),
@@ -614,6 +749,43 @@ class _HomePageState extends State<HomePage> {
                                           ),
                                         ),
                                       ],
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Container(
+                                      padding: const EdgeInsets.all(10),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blue.withValues(
+                                          alpha: 0.05,
+                                        ),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.blue.withValues(
+                                            alpha: 0.1,
+                                          ),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.info_outline,
+                                            size: 16,
+                                            color: Colors.blue[700],
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              'Peringatan: ${warningGasLevel.toInt()} PPM | Max Aman: ${maxSafeGasLevel.toInt()} PPM',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                color: Colors.blue[700],
+                                                height: 1.3,
+                                              ),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -746,6 +918,138 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  void showGasLevelSettings(BuildContext context) {
+    final maxController = TextEditingController(
+      text: maxSafeGasLevel.toInt().toString(),
+    );
+    final warningController = TextEditingController(
+      text: warningGasLevel.toInt().toString(),
+    );
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      enableDrag: true,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      builder: (context) => Container(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.only(left: 20, right: 20, bottom: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.settings, color: Colors.blue),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Pengaturan Level Gas',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              TextField(
+                controller: maxController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'Max Safe Level (PPM)',
+                  hintText: 'Masukkan nilai maksimal aman',
+                  prefixIcon: const Icon(Icons.security),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: warningController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'Warning Level (PPM)',
+                  hintText: 'Masukkan nilai peringatan',
+                  prefixIcon: const Icon(Icons.warning_amber),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    final newMax = double.tryParse(maxController.text);
+                    final newWarning = double.tryParse(warningController.text);
+
+                    if (newMax != null && newWarning != null) {
+                      if (newWarning >= newMax) {
+                        toastificationService.showError(
+                          'Error',
+                          'Warning level harus lebih kecil dari max safe level',
+                        );
+
+                        return;
+                      }
+
+                      setState(() {
+                        maxSafeGasLevel = newMax;
+                        warningGasLevel = newWarning;
+                      });
+
+                      // Publish ke MQTT
+                      publishGasLevelSettings(newMax, newWarning);
+
+                      Navigator.pop(context);
+
+                      toastificationService.showSuccess(
+                        'Pengaturan Berhasil',
+                        'Pengaturan level gas berhasil disimpan',
+                      );
+                    } else {
+                      toastificationService.showError(
+                        'Error',
+                        'Nilai max safe level dan warning level harus berupa angka',
+                      );
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue[700],
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    elevation: 2,
+                  ),
+                  child: const Text(
+                    'Simpan Pengaturan',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
