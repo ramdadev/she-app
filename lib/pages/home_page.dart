@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -17,7 +18,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   late MqttServerClient client;
-  bool isDeviceConnected = false;
   String connectedDevice = '';
 
   double temperature = 0.0;
@@ -33,6 +33,11 @@ class _HomePageState extends State<HomePage> {
   double maxSafeGasLevel = 400.0;
   double warningGasLevel = 300.0;
 
+  bool isMqttConnected = false;
+  bool isEspOnline = false;
+
+  Timer? heartbeatTimer;
+
   static const String mqttBroker =
       'f38e4be24dc34b5ca97d975d7595c8d2.s1.eu.hivemq.cloud';
   static const int mqttPort = 8883;
@@ -43,6 +48,8 @@ class _HomePageState extends State<HomePage> {
   static const String gasLevelTopic = 'home/sensor/gas';
   static const String deviceNameTopic = 'home/device/name';
   static const String gasSettingTopic = 'home/gas/setting';
+  static const String deviceStatusTopic = 'home/device/status';
+  static const String deviceHearbeatTopic = 'home/device/heartbeat';
 
   final toastificationService = ToastificationService();
 
@@ -127,7 +134,8 @@ class _HomePageState extends State<HomePage> {
 
     if (mounted) {
       setState(() {
-        isDeviceConnected = false;
+        isMqttConnected = false;
+        isEspOnline = false;
       });
     }
 
@@ -147,7 +155,7 @@ class _HomePageState extends State<HomePage> {
 
     if (mounted) {
       setState(() {
-        isDeviceConnected = true;
+        isMqttConnected = true;
       });
     }
 
@@ -157,6 +165,8 @@ class _HomePageState extends State<HomePage> {
     client.subscribe(gasLevelTopic, MqttQos.atLeastOnce);
     client.subscribe(buzzerStatusTopic, MqttQos.atLeastOnce);
     client.subscribe(gasSettingTopic, MqttQos.atLeastOnce);
+    client.subscribe(deviceStatusTopic, MqttQos.atLeastOnce);
+    client.subscribe(deviceHearbeatTopic, MqttQos.atLeastOnce);
   }
 
   void _onMqttDisconnected() {
@@ -173,7 +183,7 @@ class _HomePageState extends State<HomePage> {
 
     if (mounted) {
       setState(() {
-        isDeviceConnected = false;
+        isMqttConnected = false;
         isDataLoaded = false;
       });
     }
@@ -233,9 +243,31 @@ class _HomePageState extends State<HomePage> {
           debugPrint('Gas Settings: $gasSettings');
           break;
 
+        case deviceStatusTopic:
+          isEspOnline = payload == 'online';
+          break;
+
+        case deviceHearbeatTopic:
+          _onHeartbeat();
+          break;
+
         default:
           debugPrint('⚠️ Unknown topic: $topic');
       }
+    });
+  }
+
+  void _onHeartbeat() {
+    heartbeatTimer?.cancel();
+
+    heartbeatTimer = Timer(const Duration(seconds: 10), () {
+      setState(() {
+        isEspOnline = false;
+      });
+    });
+
+    setState(() {
+      isEspOnline = true;
     });
   }
 
@@ -297,7 +329,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Color getGasLevelColor(double value) {
-    if (!isDeviceConnected || value == 0) return Colors.grey;
+    if (!isEspOnline || value == 0) return Colors.grey;
 
     if (value >= maxSafeGasLevel) return Colors.red;
     if (value >= warningGasLevel) return Colors.orange;
@@ -306,7 +338,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   String getGasLevelStatus(double value) {
-    if (!isDeviceConnected) return 'Tidak Terhubung';
+    if (!isEspOnline) return 'Tidak Terhubung';
     if (value == 0) return 'Menunggu Data';
 
     if (value >= maxSafeGasLevel) return 'Berbahaya';
@@ -316,7 +348,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   IconData getGasLevelIcon(double value) {
-    if (!isDeviceConnected || value == 0) return Icons.sensor_occupied;
+    if (!isEspOnline || value == 0) return Icons.sensor_occupied;
 
     if (value >= maxSafeGasLevel) return Icons.warning_rounded;
     if (value >= warningGasLevel) return Icons.error_outline;
@@ -325,7 +357,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _refreshData() async {
-    if (isDeviceConnected) {
+    if (isEspOnline) {
       // Request fresh data by subscribing again
       client.subscribe(temperatureTopic, MqttQos.atLeastOnce);
       client.subscribe(humidityTopic, MqttQos.atLeastOnce);
@@ -428,12 +460,12 @@ class _HomePageState extends State<HomePage> {
                         vertical: 12,
                       ),
                       decoration: BoxDecoration(
-                        color: isDeviceConnected
+                        color: isEspOnline
                             ? const Color(0xFF4CAF50) // soft green
                             : const Color(0xFFF44336), // soft red
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: isDeviceConnected
+                          color: isEspOnline
                               ? const Color(0xFF81C784) // green light
                               : const Color(0xFFE57373), // red light
                           width: 1,
@@ -443,22 +475,22 @@ class _HomePageState extends State<HomePage> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
-                            isDeviceConnected
-                                ? Icons.cloud_done
-                                : Icons.cloud_off,
+                            isEspOnline ? Icons.cloud_done : Icons.cloud_off,
                             color: Colors.white,
                             size: 18,
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            isDeviceConnected
-                                ? connectedDevice.isNotEmpty
-                                      ? 'Terhubung: $connectedDevice'
-                                      : 'Terhubung ke MQTT'
-                                : 'Tidak Terhubung',
+                            !isMqttConnected
+                                ? 'MQTT Terputus'
+                                : isEspOnline
+                                ? connectedDevice.isEmpty
+                                      ? 'ESP32 Online'
+                                      : 'ESP32 Online ($connectedDevice)'
+                                : 'ESP32 Offline',
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 13,
+                              fontSize: 12,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -477,7 +509,7 @@ class _HomePageState extends State<HomePage> {
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     children: [
-                      if (!isDeviceConnected)
+                      if (!isEspOnline)
                         Container(
                           margin: const EdgeInsets.only(bottom: 20),
                           padding: const EdgeInsets.all(16),
@@ -610,14 +642,14 @@ class _HomePageState extends State<HomePage> {
                                             child: Row(
                                               children: [
                                                 Text(
-                                                  isDeviceConnected
+                                                  isEspOnline
                                                       ? gasLevel
                                                             .toStringAsFixed(0)
                                                       : '-',
                                                   style: TextStyle(
                                                     fontSize: 32,
                                                     fontWeight: FontWeight.bold,
-                                                    color: isDeviceConnected
+                                                    color: isEspOnline
                                                         ? Colors.black
                                                         : Colors.grey[400],
                                                   ),
@@ -705,7 +737,7 @@ class _HomePageState extends State<HomePage> {
                                           ),
                                         ),
                                         Text(
-                                          isDeviceConnected && gasLevel > 0
+                                          isEspOnline && gasLevel > 0
                                               ? '${(gasLevel / maxSafeGasLevel * 100).clamp(0, 100).toStringAsFixed(0)}%'
                                               : '0%',
                                           style: TextStyle(
@@ -720,7 +752,7 @@ class _HomePageState extends State<HomePage> {
                                     ClipRRect(
                                       borderRadius: BorderRadius.circular(10),
                                       child: LinearProgressIndicator(
-                                        value: isDeviceConnected && gasLevel > 0
+                                        value: isEspOnline && gasLevel > 0
                                             ? (gasLevel / maxSafeGasLevel)
                                                   .clamp(0.0, 1.0)
                                             : 0.0,
@@ -865,10 +897,8 @@ class _HomePageState extends State<HomePage> {
                                     Transform.scale(
                                       scale: 1.3,
                                       child: Switch(
-                                        value: isDeviceConnected
-                                            ? isBuzzerOn
-                                            : false,
-                                        onChanged: isDeviceConnected
+                                        value: isEspOnline ? isBuzzerOn : false,
+                                        onChanged: isEspOnline
                                             ? (value) => toggleBuzzer()
                                             : null,
                                         activeThumbColor: Colors.white,

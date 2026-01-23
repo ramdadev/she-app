@@ -427,7 +427,7 @@ class _DevicePageState extends State<DevicePage> {
                         fontSize: 20,
                       ),
                     ),
-                    const SizedBox(height: 19),
+                    const SizedBox(height: 18),
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
